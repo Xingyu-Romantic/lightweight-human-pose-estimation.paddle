@@ -180,7 +180,8 @@ def append_img_by_sk_points(img, append_image, key_point_y, first_point, second_
     '''
     将需要添加的肢体图片进行缩放
     '''
-
+    if first_point[0] == -1 or second_point[0] == -1:
+        return img
     #width, height = img.shape[:2]
 
     # 根据长度进行缩放
@@ -254,23 +255,26 @@ def get_combine_img(image, current_poses, body_img, backgroup_img_path= './backg
     max_width = image.shape[0] / 10
         
     
+
         #右大腿
     append_img_reset_width = min(max(int(get_distences((result[8][0] + result[11][0]) / 2, (result[8][1] + result[11][1]) / 2,
                                                 result[11][0], result[8][1])*1.6), min_width), max_width)
-        
-    image_flag = append_img_by_sk_points(image_flag, body_img['right_hip'], key_point_y=10, first_point=result[8],
-                                            second_point=result[9], append_img_reset_width=append_img_reset_width)
 
-    
+    image_flag = append_img_by_sk_points(image_flag, body_img['right_hip'], key_point_y=10, first_point=result[8],
+                                                second_point=result[9], append_img_reset_width=append_img_reset_width)
+
         # 右小腿
     append_img_reset_width = min(max(int(get_distences((result[8][0] + result[11][0]) / 2, (result[8][1] + result[11][1]) / 2,
                                                 result[11][0], result[11][1])*1.5), min_width), max_width)
+    
     image_flag = append_img_by_sk_points(image_flag, body_img['right_knee'], key_point_y=10, first_point=result[9],
-                                                second_point=result[10], append_img_reset_width=append_img_reset_width)
+                                                    second_point=result[10], append_img_reset_width=append_img_reset_width)
     
         # 左大腿
     append_img_reset_width = min(max(int(get_distences((result[8][0] + result[11][0]) / 2, (result[8][1] + result[11][1]) / 2,
                                                 result[11][0], result[11][1])*1.6), min_width), max_width)
+    
+
     image_flag = append_img_by_sk_points(image_flag, body_img['left_hip'], key_point_y=0, first_point=result[11],
                                             second_point=result[12], append_img_reset_width=append_img_reset_width)
 
@@ -355,7 +359,7 @@ def track_poses(previous_poses, current_poses, threshold=3, smooth=False):
 
         if smooth:
             for kpt_id in range(Pose.num_kpts):
-                if current_pose.keypoints[kpt_id, 0] == -1:
+                if current_pose.keypoints[kpt_id, 0] == -1 and len(previous_poses):
                     current_pose.keypoints[kpt_id] = previous_poses[0].keypoints[kpt_id]
                 # reuse filter if previous pose has valid filter
                 if (best_matched_pose_id is not None

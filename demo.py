@@ -139,7 +139,7 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth, transfer):
                 cv2.putText(img, 'id: {}'.format(pose.id), (pose.bbox[0], pose.bbox[1] - 16),
                             cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255))
         #cv2.imwrite("result.png", img)
-        if transfer:
+        if transfer and len(current_poses):
             img = get_combine_img(img, current_poses, body_img)
         counter += 1
         if (time.time() - start_time) != 0:
