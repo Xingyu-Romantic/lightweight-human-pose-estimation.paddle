@@ -1,29 +1,22 @@
+import time
+
 import cv2
 import numpy as np
+import numba as nb
 
 from modules.keypoints import BODY_PARTS_KPT_IDS, BODY_PARTS_PAF_IDS
 from modules.one_euro_filter import OneEuroFilter
 
 
-body_img_path_map = {
-    "right_hip" : "./shadow_play_material/right_hip.jpg",
-    "right_knee" : "./shadow_play_material/right_knee.jpg",
-    "left_hip" : "./shadow_play_material/left_hip.jpg",
-    "left_knee" : "./shadow_play_material/left_knee.jpg",
-    "left_elbow" : "./shadow_play_material/left_elbow.jpg",
-    "left_wrist" : "./shadow_play_material/left_wrist.jpg",
-    "right_elbow" : "./shadow_play_material/right_elbow.jpg",
-    "right_wrist" : "./shadow_play_material/right_wrist.jpg",
-    "head" : "./shadow_play_material/head.jpg",
-    "body" : "./shadow_play_material/body.jpg"
-}
 
+@nb.jit()
 def get_true_angel(value):
     '''
     转转得到角度值
     '''
     return value/np.pi*180
 
+@nb.jit()
 def get_angle(x1, y1, x2, y2):
     '''
     计算旋转角度
@@ -87,8 +80,10 @@ def rotate_bound(image, angle, key_point_y):
 
     return cv2.warpAffine(image,M,(nW,nH)), int(move_x), int(move_y)
 
+@nb.jit()
 def get_distences(x1, y1, x2, y2):
     return ((x1-x2)**2 + (y1-y2)**2)**0.5
+
 
 class Pose:
     num_kpts = 18
@@ -148,6 +143,8 @@ class Pose:
 
 
 def get_similarity(a, b, threshold=0.5):
+    return get_similarity_(a.keypoints, b.keypoints, a.bbox, b.bbox, Pose.num_kpts, Pose.vars, threshold)
+    '''
     num_similar_kpt = 0
     for kpt_id in range(Pose.num_kpts):
         if a.keypoints[kpt_id, 0] != -1 and b.keypoints[kpt_id, 0] != -1:
@@ -157,15 +154,34 @@ def get_similarity(a, b, threshold=0.5):
             if similarity > threshold:
                 num_similar_kpt += 1
     return num_similar_kpt
+    '''
+@nb.jit(nopython=True)
+def get_similarity_(a, b, ab, bb, num_kpts, vars,threshold):
+    num_similar_kpt = 0
+    for kpt_id in range(num_kpts):
+        if a[kpt_id, 0] != -1 and b[kpt_id, 0] != -1:
+            distance = np.sum((a[kpt_id] - b[kpt_id]) ** 2)
+            area = max(ab[2] * ab[3], bb[2] * bb[3])
+            similarity = np.exp(-distance / (2 * (area + np.spacing(1)) * vars[kpt_id]))
+            if similarity > threshold:
+                num_similar_kpt += 1
+    return num_similar_kpt
 
-def append_img_by_sk_points(img, append_img_path, key_point_y, first_point, second_point, append_img_reset_width=None,
+@nb.jit()
+def img_mask(img, append_image, zero_x, zero_y, r, img_width, img_height):
+    for i in range(0, r.shape[0]):
+        for j in range(0, r.shape[1]):
+            if 230>r[i][j]>200 and 0<=zero_y+i<img_height and 0<=zero_x+j<img_width:
+                img[zero_y+i][zero_x+j] = append_image[i][j]
+
+
+def append_img_by_sk_points(img, append_image, key_point_y, first_point, second_point, append_img_reset_width=None,
                                         append_img_max_height_rate=1, middle_flip=False, append_img_max_height=None):
     '''
     将需要添加的肢体图片进行缩放
     '''
-    append_image = cv2.imdecode(np.fromfile(append_img_path, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
 
-    width, height = img.shape[:2]
+    #width, height = img.shape[:2]
 
     # 根据长度进行缩放
     sk_height = int(get_distences(first_point[0], first_point[1], second_point[0], second_point[1])*append_img_max_height_rate)
@@ -194,83 +210,96 @@ def append_img_by_sk_points(img, append_img_path, key_point_y, first_point, seco
     # 旋转角度
     angle = get_angle(first_point[0], first_point[1], second_point[0], second_point[1])
     append_image, move_x, move_y = rotate_bound(append_image, angle=angle, key_point_y=key_point_y_new)
-    app_img_height, app_img_width, _ = append_image.shape
-    
+
     zero_x = first_point[0] - move_x
     zero_y = first_point[1] - move_y
 
+
+
+    #cv2.seamlessClone(img, append_image, mask, (zero_y + width // 2, zero_x + height // 2), cv2.MIXED_CLONE)
+    #img_mask(img, append_image, zero_x, zero_y)
+    #img[zero_y: zero_y + width, zero_x: zero_x + height]  =  append_image
     (b, g, r) = cv2.split(append_image) 
+    img_mask(img, append_image, zero_x, zero_y, r, img_width, img_height)
+    '''
     for i in range(0, r.shape[0]):
         for j in range(0, r.shape[1]):
             if 230>r[i][j]>200 and 0<=zero_y+i<img_height and 0<=zero_x+j<img_width:
                 img[zero_y+i][zero_x+j] = append_image[i][j]
+    '''
+    
+    
     return img
 
 
-def get_combine_img(image, current_poses, pre_poses, body_img_path_map=body_img_path_map, backgroup_img_path= '../background.jpg'):
+
+def get_combine_img(image, current_poses, body_img, backgroup_img_path= './background.jpg'):
     '''
     识别图片中的关节点，并将皮影的肢体进行对应，最后与原图像拼接后输出
     '''
-
+    
     # 背景图片
+    
     backgroup_image = cv2.imread(backgroup_img_path)
+    
     image_flag = cv2.resize(backgroup_image, (image.shape[1], image.shape[0]))
-
+    
     # 最小宽度
     pose = current_poses[0]
     
     result = pose.keypoints
-
         
     min_width = int(get_distences(result[0][0], result[0][1],
                     result[1][0], result[1][1])/3)
     max_width = image.shape[0] / 10
         
-
+    
         #右大腿
     append_img_reset_width = min(max(int(get_distences((result[8][0] + result[11][0]) / 2, (result[8][1] + result[11][1]) / 2,
                                                 result[11][0], result[8][1])*1.6), min_width), max_width)
         
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['right_hip'], key_point_y=10, first_point=result[8],
+    image_flag = append_img_by_sk_points(image_flag, body_img['right_hip'], key_point_y=10, first_point=result[8],
                                             second_point=result[9], append_img_reset_width=append_img_reset_width)
 
+    
         # 右小腿
     append_img_reset_width = min(max(int(get_distences((result[8][0] + result[11][0]) / 2, (result[8][1] + result[11][1]) / 2,
                                                 result[11][0], result[11][1])*1.5), min_width), max_width)
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['right_knee'], key_point_y=10, first_point=result[9],
+    image_flag = append_img_by_sk_points(image_flag, body_img['right_knee'], key_point_y=10, first_point=result[9],
                                                 second_point=result[10], append_img_reset_width=append_img_reset_width)
-
+    
         # 左大腿
     append_img_reset_width = min(max(int(get_distences((result[8][0] + result[11][0]) / 2, (result[8][1] + result[11][1]) / 2,
                                                 result[11][0], result[11][1])*1.6), min_width), max_width)
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['left_hip'], key_point_y=0, first_point=result[11],
+    image_flag = append_img_by_sk_points(image_flag, body_img['left_hip'], key_point_y=0, first_point=result[11],
                                             second_point=result[12], append_img_reset_width=append_img_reset_width)
 
         # 左小腿
     append_img_reset_width = min(max(int(get_distences((result[8][0] + result[11][0]) / 2, (result[8][1] + result[11][1]) / 2,
                                             result[11][0], result[11][1])*1.5), min_width), max_width)
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['left_knee'], key_point_y=10, first_point=result[12],
+    image_flag = append_img_by_sk_points(image_flag, body_img['left_knee'], key_point_y=10, first_point=result[12],
                                                 second_point=result[13], append_img_reset_width=append_img_reset_width)
 
         # 右手臂
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['left_elbow'], key_point_y=25, first_point=result[2],
+    image_flag = append_img_by_sk_points(image_flag, body_img['left_elbow'], key_point_y=25, first_point=result[2],
                                             second_point=result[3], append_img_max_height_rate=1.2)
 
+    
+    
         # 右手肘
     append_img_max_height = int(get_distences(result[2][0], result[2][1],
                                                 result[3][0], result[3][1])*1.6)
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['left_wrist'], key_point_y=10, first_point=result[3],
+    image_flag = append_img_by_sk_points(image_flag, body_img['left_wrist'], key_point_y=10, first_point=result[3],
                                                 second_point=result[4], append_img_max_height_rate=1.5, 
                                                 append_img_max_height=append_img_max_height)
 
         # 左手臂
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['right_elbow'], key_point_y=25, first_point=result[5], 
+    image_flag = append_img_by_sk_points(image_flag, body_img['right_elbow'], key_point_y=25, first_point=result[5], 
                                             second_point=result[6],  append_img_max_height_rate=1.2)
-
         # 左手肘
     append_img_max_height = int(get_distences(result[5][0], result[5][1],
                                             result[6][0], result[6][1])*1.6)
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['right_wrist'], key_point_y=10, first_point=result[6],
+    image_flag = append_img_by_sk_points(image_flag, body_img['right_wrist'], key_point_y=10, first_point=result[6],
                                             second_point=result[7], append_img_max_height_rate=1.5, 
                                             append_img_max_height=append_img_max_height)
 
@@ -279,18 +308,20 @@ def get_combine_img(image, current_poses, pre_poses, body_img_path_map=body_img_
         # 身体
     append_img_reset_width = max(int(get_distences(result[5][0], result[5][1],
                                                 result[2][0], result[2][1])*1.2), min_width*3)
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['body'], key_point_y=20, first_point=result[1],
+    image_flag = append_img_by_sk_points(image_flag, body_img['body'], key_point_y=20, first_point=result[1],
                         second_point=(result[8] + result[11]) / 2, append_img_reset_width=append_img_reset_width, append_img_max_height_rate=1.2)
 
         # 头
     append_img_max_height = int(get_distences(result[1][0], result[1][1], (result[8][0] + result[11][0]) / 2, (result[8][1] + result[11][1]) / 2))
-    image_flag = append_img_by_sk_points(image_flag, body_img_path_map['head'], key_point_y=10, first_point=result[0],
+    image_flag = append_img_by_sk_points(image_flag, body_img['head'], key_point_y=10, first_point=result[0],
                         second_point=result[1], append_img_max_height_rate=1.2, middle_flip=True, append_img_max_height = int(append_img_max_height / 2))
 
-
+    
     result_img =  np.concatenate((image, image_flag), axis=1) 
-
+    
     return result_img
+
+
 
 def track_poses(previous_poses, current_poses, threshold=3, smooth=False):
     """Propagate poses ids from previous frame results. Id is propagated,

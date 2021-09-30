@@ -1,7 +1,9 @@
 import argparse
-
+from sys import path
+import time
 import cv2
 import numpy as np
+import numba as nb
 import paddle
 
 from models.with_mobilenet import PoseEstimationWithMobileNet
@@ -10,6 +12,23 @@ from modules.load_state import load_state
 from modules.pose import Pose, track_poses, get_combine_img
 from val import normalize, pad_width
 
+body_img_path_map = {
+    "right_hip" : "./shadow_play_material/right_hip.jpg",
+    "right_knee" : "./shadow_play_material/right_knee.jpg",
+    "left_hip" : "./shadow_play_material/left_hip.jpg",
+    "left_knee" : "./shadow_play_material/left_knee.jpg",
+    "left_elbow" : "./shadow_play_material/left_elbow.jpg",
+    "left_wrist" : "./shadow_play_material/left_wrist.jpg",
+    "right_elbow" : "./shadow_play_material/right_elbow.jpg",
+    "right_wrist" : "./shadow_play_material/right_wrist.jpg",
+    "head" : "./shadow_play_material/head.jpg",
+    "body" : "./shadow_play_material/body.jpg"
+}
+body_img = dict()
+
+for name, path in body_img_path_map.items():
+    img = cv2.imread(path)
+    body_img[name] = img
 
 class ImageReader(object):
     def __init__(self, file_names):
@@ -50,7 +69,7 @@ class VideoReader(object):
             raise StopIteration
         return img
 
-
+@nb.jit(forceobj=True)
 def infer_fast(net, img, net_input_height_size, stride, upsample_ratio, cpu,
                pad_value=(0, 0, 0), img_mean=np.array([128, 128, 128], np.float32), img_scale=np.float32(1/256)):
     height, width, _ = img.shape
@@ -80,6 +99,8 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth, transfer):
     num_keypoints = Pose.num_kpts
     previous_poses = []
     delay = 1
+    start_time = time.time()
+    counter = 0
     for img in image_provider:
         orig_img = img.copy()
         heatmaps, pafs, scale, pad = infer_fast(net, img, height_size, stride, upsample_ratio, cpu)
@@ -119,7 +140,11 @@ def run_demo(net, image_provider, height_size, cpu, track, smooth, transfer):
                             cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255))
         #cv2.imwrite("result.png", img)
         if transfer:
-            img = get_combine_img(img, current_poses, previous_poses)
+            img = get_combine_img(img, current_poses, body_img)
+        counter += 1
+        if (time.time() - start_time) != 0:
+            cv2.putText(img, "FPS {0}".format("%.1f" % (counter / (time.time() - start_time))), 
+                        (100, 100), cv2.FONT_HERSHEY_SIMPLEX, 2, (0, 0, 255), 3)
         cv2.imshow('Lightweight Human Pose Estimation Python Demo', img)
         key = cv2.waitKey(delay)
         if key == 27:  # esc
